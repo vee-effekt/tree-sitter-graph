@@ -36,11 +36,11 @@ use crate::Location;
 /// that they don't outlive the tree-sitter syntax tree that they are generated from.
 #[derive(Default)]
 pub struct Graph<'tree> {
-    pub(crate) syntax_nodes: HashMap<SyntaxNodeID, Node<'tree>>,
-    graph_nodes: Vec<GraphNode>,
+    pub syntax_nodes: HashMap<SyntaxNodeID, Node<'tree>>,
+    pub graph_nodes: Vec<GraphNode>,
 }
 
-pub(crate) type SyntaxNodeID = u32;
+pub type SyntaxNodeID = u32;
 type GraphNodeID = u32;
 
 impl<'tree> Graph<'tree> {
@@ -89,6 +89,23 @@ impl<'tree> Graph<'tree> {
             }
         }
 
+        DisplayGraph(self)
+    }
+
+    pub fn graphviz_print<'a>(&'a self) -> impl fmt::Display + 'a {
+        struct DisplayGraph<'a, 'tree>(&'a Graph<'tree>);
+
+        impl<'a, 'tree> fmt::Display for DisplayGraph<'a, 'tree> {
+            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                let graph = self.0;
+                for (node_index, node) in graph.graph_nodes.iter().enumerate() {
+                    for (sink, edge) in &node.outgoing_edges {
+                        write!(f, "{}.{} -> {}", node_index, node.attributes, *sink)?;
+                    }
+                }
+                Ok(())
+            }
+        }
         DisplayGraph(self)
     }
 
@@ -142,7 +159,7 @@ impl<'tree> Serialize for Graph<'tree> {
 
 /// A node in a graph
 pub struct GraphNode {
-    outgoing_edges: SmallVec<[(GraphNodeID, Edge); 8]>,
+    pub outgoing_edges: SmallVec<[(GraphNodeID, Edge); 8]>,
     /// The set of attributes associated with this graph node
     pub attributes: Attributes,
 }
