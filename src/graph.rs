@@ -99,8 +99,12 @@ impl<'tree> Graph<'tree> {
             fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 let graph = self.0;
                 for (node_index, node) in graph.graph_nodes.iter().enumerate() {
+                    let symbol = match node.attributes.get("symbol") {
+                        Some(Value::String(symbol)) => write!(f, "{} -> \"{}\" [dir=forward color=blue]\n", node_index, symbol),
+                        _ => write!(f, ""),
+                    };
                     for (sink, edge) in &node.outgoing_edges {
-                        write!(f, "{}.{} -> {}", node_index, node.attributes, *sink)?;
+                        write!(f, "{} -> {}\n", node_index, *sink)?;
                     }
                 }
                 Ok(())
