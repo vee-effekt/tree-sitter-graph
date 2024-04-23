@@ -5,12 +5,18 @@
 // Please see the LICENSE-APACHE or LICENSE-MIT files in this distribution for license details.
 // ------------------------------------------------------------------------------------------------
 
+use std::collections::HashMap;
+use std::hash::Hash;
+
 use thiserror::Error;
 use tree_sitter::CaptureQuantifier;
 use tree_sitter::Node;
 use tree_sitter::QueryMatch;
 use tree_sitter::Tree;
 
+use crate::graph::GraphNode;
+use crate::graph::GraphNodeRef;
+use crate::graph::Graph;
 use crate::ast::CreateEdge;
 use crate::ast::File;
 use crate::ast::Stanza;
@@ -18,7 +24,6 @@ use crate::ast::Variable;
 use crate::execution::error::ExecutionError;
 use crate::functions::Functions;
 use crate::graph::Attributes;
-use crate::graph::Graph;
 use crate::graph::Value;
 use crate::variables::Globals;
 use crate::Identifier;

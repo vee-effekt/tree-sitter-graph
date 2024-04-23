@@ -25,6 +25,7 @@ use serde::ser::SerializeSeq;
 use serde::Serialize;
 use serde::Serializer;
 use serde_json;
+use serde_json::Map;
 use smallvec::SmallVec;
 use tree_sitter::Node;
 
@@ -38,6 +39,8 @@ use crate::Location;
 pub struct Graph<'tree> {
     pub syntax_nodes: HashMap<SyntaxNodeID, Node<'tree>>,
     pub graph_nodes: Vec<GraphNode>,
+    pub ast_to_graph: HashMap<Node<'tree>, GraphNodeRef>,
+    pub graph_to_ast: HashMap<GraphNodeRef, SyntaxNodeRef>,
 }
 
 pub type SyntaxNodeID = u32;

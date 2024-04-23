@@ -10,6 +10,7 @@ mod store;
 mod values;
 
 use log::{debug, trace};
+use tree_sitter::Node;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -19,6 +20,7 @@ use tree_sitter::QueryMatch;
 use tree_sitter::Tree;
 
 use crate::ast;
+use crate::graph::GraphNodeRef;
 use crate::execution::error::ExecutionError;
 use crate::execution::error::ResultWithExecutionError;
 use crate::execution::error::StatementContext;
@@ -109,6 +111,98 @@ impl ast::File {
         Ok(())
     }
 
+    pub fn weird_execute_lazy_into<'a, 'tree>(
+        &self,
+        graph: &mut Graph<'tree>,
+        tree: &'tree Tree,
+        source: &'tree str,
+        config: &ExecutionConfig,
+        cancellation_flag: &dyn CancellationFlag,
+        map: &mut HashMap<usize, GraphNodeRef>
+    ) -> Result<(Tree, HashMap<usize, GraphNodeRef>), ExecutionError> {
+        let mut globals = Globals::nested(config.globals);
+        self.check_globals(&mut globals)?;
+        let mut config = ExecutionConfig {
+            functions: config.functions,
+            globals: &globals,
+            lazy: config.lazy,
+            location_attr: config.location_attr.clone(),
+            variable_name_attr: config.variable_name_attr.clone(),
+            match_node_attr: config.match_node_attr.clone(),
+        };
+
+        let mut locals = VariableMap::new();
+        let mut store = LazyStore::new();
+        let mut scoped_store = LazyScopedVariables::new();
+        let mut lazy_graph = LazyGraph::new();
+        let mut function_parameters = Vec::new();
+        let mut prev_element_debug_info = HashMap::new();
+
+        self.try_visit_matches_lazy(tree, source, |stanza, mat| {
+            cancellation_flag.check("processing matches")?;
+            let result = stanza.weird_execute_lazy(
+                source, 
+                &mat, 
+                graph, 
+                &mut config, 
+                &mut locals, 
+                &mut store, 
+                &mut scoped_store, 
+                &mut lazy_graph, 
+                &mut function_parameters, 
+                &mut prev_element_debug_info, 
+                &self.inherited_variables, 
+                &self.shorthands, 
+                cancellation_flag);
+            match result {
+                Ok(Some(map2)) => {
+                    for (key, value) in map2 {
+                        map.insert(key, value);
+                    }
+                    Ok(())
+                }
+                Err(e) => return Err(e),
+                _ => Ok(()),
+            }
+            /*
+            stanza.execute_lazy(
+                source,
+                &mat,
+                graph,
+                &mut config,
+                &mut locals,
+                &mut store,
+                &mut scoped_store,
+                &mut lazy_graph,
+                &mut function_parameters,
+                &mut prev_element_debug_info,
+                &self.inherited_variables,
+                &self.shorthands,
+                cancellation_flag,
+            )
+            */
+        })?;
+
+        let mut exec = EvaluationContext {
+            source,
+            graph,
+            functions: config.functions,
+            store: &store,
+            scoped_store: &scoped_store,
+            inherited_variables: &self.inherited_variables,
+            function_parameters: &mut function_parameters,
+            prev_element_debug_info: &mut prev_element_debug_info,
+            cancellation_flag,
+        };
+        lazy_graph.evaluate(&mut exec)?;
+        // make sure any unforced values are now forced, to surface any problems
+        // hidden by the fact that the values were unused
+        store.evaluate_all(&mut exec)?;
+        scoped_store.evaluate_all(&mut exec)?;
+
+        Ok((tree.clone(), map.clone()))
+    }
+
     pub(super) fn try_visit_matches_lazy<'tree, E, F>(
         &self,
         tree: &'tree Tree,
@@ -169,6 +263,62 @@ pub(super) enum GraphElementKey {
 }
 
 impl ast::Stanza {
+    fn weird_execute_lazy<'a, 'l, 'g, 'q, 'tree>(&self,
+        source: &'tree str,
+        mat: &QueryMatch<'_, 'tree>,
+        graph: &mut Graph<'tree>,
+        config: &ExecutionConfig,
+        locals: &mut VariableMap<'l, LazyValue>,
+        store: &mut LazyStore,
+        scoped_store: &mut LazyScopedVariables,
+        lazy_graph: &mut LazyGraph,
+        function_parameters: &mut Vec<graph::Value>,
+        prev_element_debug_info: &mut HashMap<GraphElementKey, DebugInfo>,
+        inherited_variables: &HashSet<Identifier>,
+        shorthands: &ast::AttributeShorthands,
+        cancellation_flag: &dyn CancellationFlag,
+    ) -> Result<Option<HashMap<usize, GraphNodeRef>>, ExecutionError> {
+        let mut map = HashMap::new();
+        let current_regex_captures = vec![];
+        locals.clear();
+        let node = mat
+            .nodes_for_capture_index(self.full_match_file_capture_index as u32)
+            .next()
+            .expect("missing capture for full match");
+        debug!("match {:?} at {}", node, self.range.start);
+        trace!("{{");
+        for statement in &self.statements {
+            let error_context = { StatementContext::new(&statement, &self, &node) };
+            let mut exec = ExecutionContext {
+                source,
+                graph,
+                config,
+                locals,
+                current_regex_captures: &current_regex_captures,
+                mat,
+                full_match_file_capture_index: self.full_match_file_capture_index,
+                store,
+                scoped_store,
+                lazy_graph,
+                function_parameters,
+                prev_element_debug_info,
+                error_context,
+                inherited_variables,
+                shorthands,
+                cancellation_flag,
+            };
+            match statement.weird_execute_lazy(&mut exec) {
+                Ok(Some((match_node, graph_node))) => {
+                    map.insert(match_node, graph_node);
+                }
+                Err(e) => return Err(e),
+                _ => (),
+            }
+        }
+        trace!("}}");
+        Ok(Some(map))
+    }
+
     fn execute_lazy<'a, 'l, 'g, 'q, 'tree>(
         &self,
         source: &'tree str,
@@ -239,6 +389,91 @@ impl ast::Statement {
             Self::ForIn(statement) => statement.execute_lazy(exec),
         }
     }
+
+    fn weird_execute_lazy(&self, exec: &mut ExecutionContext) -> Result<Option<(usize, GraphNodeRef)>, ExecutionError> {
+        exec.cancellation_flag.check("executing statement")?;
+        match self {
+            Self::DeclareImmutable(statement) => {
+                let result = statement.execute_lazy(exec);
+                match result {
+                    Ok(_) => Ok(None),
+                    Err(e) => return Err(e),
+                }
+            },
+            Self::DeclareMutable(statement) => {
+                let result = statement.execute_lazy(exec);
+                match result {
+                    Ok(_) => Ok(None),
+                    Err(e) => return Err(e),
+                }
+            },
+            Self::Assign(statement) => {
+                let result = statement.execute_lazy(exec);
+                match result {
+                    Ok(_) => Ok(None),
+                    Err(e) => return Err(e),
+                }
+            },
+            Self::CreateGraphNode(statement) => {
+                let result = statement.weird_execute_lazy(exec);
+                match result {
+                    Ok((match_node, graph_node)) => {
+                        Ok(Some((match_node, graph_node)))
+                    }
+                    Err(e) => return Err(e),
+                }
+            },
+            Self::AddGraphNodeAttribute(statement) => {
+                let result = statement.execute_lazy(exec);
+                match result {
+                    Ok(_) => Ok(None),
+                    Err(e) => return Err(e),
+                }
+            },
+            Self::CreateEdge(statement) => {
+                let result = statement.execute_lazy(exec);
+                match result {
+                    Ok(_) => Ok(None),
+                    Err(e) => return Err(e),
+                }
+            },
+            Self::AddEdgeAttribute(statement) => {
+                let result = statement.execute_lazy(exec);
+                match result {
+                    Ok(_) => Ok(None),
+                    Err(e) => return Err(e),
+                }
+            },
+            Self::Scan(statement) => {
+                let result = statement.execute_lazy(exec);
+                match result {
+                    Ok(_) => Ok(None),
+                    Err(e) => return Err(e),
+                }
+            },
+            Self::Print(statement) => {
+                let result = statement.execute_lazy(exec);
+                match result {
+                    Ok(_) => Ok(None),
+                    Err(e) => return Err(e),
+                }
+            },
+            Self::If(statement) => {
+                let result = statement.execute_lazy(exec);
+                match result {
+                    Ok(_) => Ok(None),
+                    Err(e) => return Err(e),
+                }
+            },
+            Self::ForIn(statement) => {
+                let result = statement.execute_lazy(exec);
+                match result {
+                    Ok(_) => Ok(None),
+                    Err(e) => return Err(e),
+                }
+            },
+        }
+    }
 }
 
 impl ast::DeclareImmutable {
@@ -285,6 +520,38 @@ impl ast::CreateGraphNode {
                 })?;
         }
         self.node.add_lazy(exec, graph_node.into(), false)
+    }
+
+    fn weird_execute_lazy(&self, exec: &mut ExecutionContext) -> Result<(usize, GraphNodeRef), ExecutionError> {
+        let match_node = exec
+        .mat
+        .nodes_for_capture_index(exec.full_match_file_capture_index as u32)
+        .next()
+        .expect("missing capture for full match");
+        let graph_node = exec.graph.add_graph_node();
+        self.node
+            .add_debug_attrs(&mut exec.graph[graph_node].attributes, exec.config)?;
+        if let Some(match_node_attr) = &exec.config.match_node_attr {
+            let match_node = exec
+                .mat
+                .nodes_for_capture_index(exec.full_match_file_capture_index as u32)
+                .next()
+                .expect("missing capture for full match");
+            let syn_node = exec.graph.add_syntax_node(match_node);
+            exec.graph[graph_node]
+                .attributes
+                .add(match_node_attr.clone(), syn_node)
+                .map_err(|_| {
+                    ExecutionError::DuplicateAttribute(format!(
+                        " {} on graph node ({}) in {}",
+                        match_node_attr, graph_node, self,
+                    ))
+                })?;
+        }
+        match self.node.add_lazy(exec, graph_node.into(), false) {
+            Ok(_) => Ok((match_node.id(), graph_node)),
+            Err(e) => return Err(e),
+        }
     }
 }
 
