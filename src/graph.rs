@@ -72,6 +72,7 @@ impl<'tree> Graph<'tree> {
         let graph_node = GraphNode::new();
         let index = self.graph_nodes.len() as GraphNodeID;
         self.graph_nodes.push(graph_node);
+        // println!("Adding graph node... {:?}", GraphNodeRef(index));
         GraphNodeRef(index)
     }
 

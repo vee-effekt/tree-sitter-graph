@@ -434,6 +434,7 @@ pub mod stdlib {
             ) -> Result<Value, ExecutionError> {
                 parameters.finish()?;
                 let node = graph.add_graph_node();
+                println!("Adding graph node inside Function... {:?}", node);
                 Ok(Value::GraphNode(node))
             }
         }

@@ -284,6 +284,7 @@ impl Assign {
 impl CreateGraphNode {
     fn execute(&self, exec: &mut ExecutionContext) -> Result<(), ExecutionError> {
         let graph_node = exec.graph.add_graph_node();
+        println!("Adding graph node in strict... {:?}", graph_node);
         self.node
             .add_debug_attrs(&mut exec.graph[graph_node].attributes, exec.config)?;
         if let Some(match_node_attr) = &exec.config.match_node_attr {
