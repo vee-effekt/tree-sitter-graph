@@ -463,7 +463,6 @@ impl ast::CreateGraphNode {
             Ok(_) => {
                 ts_to_graph_map.entry(match_node.id()).or_insert(Vec::new()).push(graph_node);
                 graph_to_ts_map.entry(graph_node).or_insert(match_node.id());
-                // println!("Graph node {} match node {}", graph_node, match_node.id());
                 Ok(())},
             Err(e) => return Err(e),
         }
